@@ -1,0 +1,80 @@
+name: Build Chatbox
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Patch Dependencies & Paths
+        run: |
+          # 1. Fix the Mastra v1.0 breaking change
+          sed -i 's/"@mastra\/core": ".*"/"@mastra\/core": "0.23.1"/g' package.json
+          sed -i 's/"@mastra\/libsql": ".*"/"@mastra\/libsql": "0.15.1"/g' package.json
+          
+          # 2. Fix the TanStack Router 'scandir' path bug
+          mkdir -p src/renderer/src/renderer
+          ln -s ../routes src/renderer/src/renderer/routes
+
+      - name: Create Capacitor Config
+        run: |
+          cat <<EOF > capacitor.config.json
+          {
+            "appId": "com.custom.chatbox.build",
+            "appName": "Chatbox Custom",
+            "webDir": "release/app/dist/renderer",
+            "server": {
+              "cleartext": true,
+              "androidScheme": "http"
+            },
+            "android": {
+              "allowMixedContent": true
+            }
+          }
+          EOF
+
+      - name: Install Dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Web Assets (Mobile Target)
+        run: CHATBOX_BUILD_TARGET=mobile_app pnpm run build
+
+      - name: Generate Android Platform
+        run: |
+          # Install Capacitor 7 core components at workspace root
+          pnpm install -w @capacitor/android @capacitor/core @capacitor/cli
+          npx cap add android
+
+      - name: Sync & Build APK
+        run: |
+          # Create directory if build system uses a different structure
+          mkdir -p release/app/dist/renderer
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-java21-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
