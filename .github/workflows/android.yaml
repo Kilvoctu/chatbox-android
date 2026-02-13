@@ -1,0 +1,262 @@
+name: Build Multi-Architecture APKs
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build ${{ matrix.abi }} APK
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '21'
+
+      - name: Patch Dependencies & Paths
+        run: |
+          sed -i 's/"@mastra\/core": ".*"/"@mastra\/core": "0.23.1"/g' package.json
+          sed -i 's/"@mastra\/libsql": ".*"/"@mastra\/libsql": "0.15.1"/g' package.json
+          mkdir -p src/renderer/src/renderer
+          ln -s ../routes src/renderer/src/renderer/routes
+
+      - name: Create Capacitor Config
+        run: |
+          cat <<EOF > capacitor.config.json
+          {
+            "appId": "com.custom.chatbox.build",
+            "appName": "Chatbox Source",
+            "webDir": "release/app/dist/renderer",
+            "server": {
+              "cleartext": true,
+              "androidScheme": "http"
+            },
+            "android": {
+              "allowMixedContent": true
+            }
+          }
+          EOF
+      
+      - name: View Capacitor Config
+        run: |
+          echo "--- START capacitor.config.json ---"
+          cat capacitor.config.json
+          echo "--- END capacitor.config.json ---"
+
+      - name: Install Dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build Web Assets (Mobile Target)
+        run: CHATBOX_BUILD_TARGET=mobile_app pnpm run build
+
+      - name: Generate Android Platform
+        run: |
+          pnpm install -w @capacitor/android @capacitor/core @capacitor/cli
+          npx cap add android
+
+      - name: Decode Keystore
+        run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.jks
+
+      - name: Generate App Icons
+        run: |
+          pnpm install @capacitor/assets -g
+          npx capacitor-assets generate --android
+
+      - name: Sync & Build APK
+        run: |
+          mkdir -p release/app/dist/renderer
+          npx cap sync android
+          npx cap update android
+
+          # 1. Force Bridge Activity with Blob-to-Native Support
+          ACTIVITY_PATH="android/app/src/main/java/com/custom/chatbox/build/MainActivity.java"
+          
+          cat <<EOF > $ACTIVITY_PATH
+          package com.custom.chatbox.build;
+          import java.text.SimpleDateFormat;
+          import java.util.Date;
+          import java.util.Locale;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.util.Base64;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.WebView;
+          import android.widget.Toast;
+          import com.getcapacitor.BridgeActivity;
+          import java.io.File;
+          import java.io.FileOutputStream;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  
+                  WebView webView = this.getBridge().getWebView();
+                  webView.getSettings().setJavaScriptEnabled(true);
+                  
+                  // 1. Add the "Handshake" interface
+                  webView.addJavascriptInterface(new Object() {
+                      @JavascriptInterface
+                      public void processBlob(String base64Data) {
+                          try {
+                              File exportDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "chatbox_ai_exports");
+                              if (!exportDir.exists()) exportDir.mkdirs();
+
+                              String timestamp = new SimpleDateFormat("yyyy-MM-dd-HHmmss", Locale.getDefault()).format(new Date());
+                              String fileName = "chatbox-exported-data-" + timestamp + ".json";
+                              File file = new File(exportDir, fileName);
+
+                              // Strip the header (e.g., "data:application/json;base64,")
+                              String pureBase64 = base64Data.substring(base64Data.indexOf(",") + 1);
+                              byte[] decodedBytes = Base64.decode(pureBase64, Base64.DEFAULT);
+
+                              FileOutputStream fos = new FileOutputStream(file);
+                              fos.write(decodedBytes);
+                              fos.close();
+
+                              runOnUiThread(() -> Toast.makeText(MainActivity.this, "Success! File saved to Documents/chatbox_ai_exports", Toast.LENGTH_LONG).show());
+                          } catch (Exception e) {
+                              runOnUiThread(() -> Toast.makeText(MainActivity.this, "Blob Save Error: " + e.getMessage(), Toast.LENGTH_LONG).show());
+                          }
+                      }
+                  }, "AndroidBlobInterface");
+
+                  // 2. Intercept the download and trigger the JS conversion
+                  webView.setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
+                      if (url.startsWith("blob:")) {
+                          // This script fetches the blob data and sends it to our interface
+                          String js = "var xhr = new XMLHttpRequest(); " +
+                                     "xhr.open('GET', '" + url + "', true); " +
+                                     "xhr.responseType = 'blob'; " +
+                                     "xhr.onload = function(e) { " +
+                                     "  if (this.status == 200) { " +
+                                     "    var blob = this.response; " +
+                                     "    var reader = new FileReader(); " +
+                                     "    reader.readAsDataURL(blob); " +
+                                     "    reader.onloadend = function() { " +
+                                     "      AndroidBlobInterface.processBlob(reader.result); " +
+                                     "    } " +
+                                     "  } " +
+                                     "}; " +
+                                     "xhr.send();";
+                          webView.evaluateJavascript(js, null);
+                      } else {
+                          Toast.makeText(MainActivity.this, "Unexpected URL: " + url.substring(0, 15), Toast.LENGTH_SHORT).show();
+                      }
+                  });
+              }
+          }
+          EOF
+
+          # 2. Overwrite Manifest (The Safe Fix)
+          # We write the entire file from scratch to ensure perfect XML structure.
+          cat <<EOF > android/app/src/main/AndroidManifest.xml
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="30" />
+              <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+              <application
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:label="@string/app_name"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:supportsRtl="true"
+                  android:theme="@style/AppTheme"
+                  android:requestLegacyExternalStorage="true"
+                  android:preserveLegacyExternalStorage="true"
+                  android:extractNativeLibs="true">
+
+                  <activity
+                      android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+                      android:name="com.custom.chatbox.build.MainActivity"
+                      android:label="@string/title_activity_main"
+                      android:theme="@style/AppTheme.NoActionBarLaunch"
+                      android:launchMode="singleTask"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <provider
+                      android:name="androidx.core.content.FileProvider"
+                      android:authorities="com.custom.chatbox.build.fileprovider"
+                      android:exported="false"
+                      android:grantUriPermissions="true">
+                      <meta-data
+                          android:name="android.support.FILE_PROVIDER_PATHS"
+                          android:resource="@xml/file_paths" />
+                  </provider>
+              </application>
+          </manifest>
+          EOF
+
+          # 3. Create File Paths
+          mkdir -p android/app/src/main/res/xml
+          echo '<?xml version="1.0" encoding="utf-8"?><paths><external-path name="external_files" path="." /><cache-path name="cache" path="." /><files-path name="files" path="." /><root-path name="root" path="." /></paths>' > android/app/src/main/res/xml/file_paths.xml
+
+          # 4. Final Build Steps
+          cd android
+          # Check if splits are already there to avoid duplicates
+          if ! grep -q "splits" app/build.gradle; then
+             sed -i '/android {/a \    splits { abi { enable true; reset(); include "${{ matrix.abi }}"; universalApk false } }' app/build.gradle
+          fi
+          
+          sed -i '/android {/a \    applicationVariants.all { variant -> variant.outputs.all { output -> outputFileName = "app-${{ matrix.abi }}-chatbox.apk" } }' app/build.gradle
+          sed -i '/android {/a \    signingConfigs { debug { storeFile file("../../release.jks"); storePassword "${{ secrets.KEY_PASS }}"; keyAlias "chatbox-key"; keyPassword "${{ secrets.KEY_PASS }}" } }' app/build.gradle
+
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatbox-${{ matrix.abi }}
+          path: android/app/build/outputs/apk/debug/app-${{ matrix.abi }}-chatbox.apk
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: apks
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Chatbox Source Build #${{ github.run_number }}"
+          body: "Automated multi-architecture builds for Chatbox."
+          draft: false
+          prerelease: false
+          files: apks/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
