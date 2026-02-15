@@ -1,3 +1,23 @@
+# Chatbox Source (Android from source build)
+
+This repository provides automated, clean builds of Chatbox for Android, compiled directly from the official source code.
+
+The official apk and Play Store versions include some additional things like forced disclaimers and other stuff that isn't present the source code. This fork builds what's in repo with no hidden modifications. It builds apks for arm64-v8a, armeabi-v7a, x86_64, and x86 to ensure optimized performance for each respective device.
+
+How to Use:
+- Check the [Releases](https://github.com/Kilvoctu/chatbox/releases) for download links for the apk matching your mobile's architecture. Most modern phones use arm64-v8a.
+- Install the apk. You may need to enable "Install from Unknown Sources" in your Android settings.
+
+Key notes and differences:
+- Update Compatibility: This version is called Chatbox Source. It uses a custom signing key so it can "update" with any future updated apks from this repo.
+- However, you cannot update the official versions to this one, or this one to official versions.
+- You can install both, export your data from the official app and import into this version (and vice versa). The data is compatible.
+- When importing to this app, it will freeze. The import still worked, just restart the app.
+- Exported data from this app follows this filename format: chatbox-exported-data-YYYY-MM-DD-HHMMSS.json.
+- You can inspect the `.github/workflows/android.yaml` file to see exactly how the code is compiled and sent to Releases.
+
+---
+
 <p align="right">
   <a href="README.md">English</a> |
   <a href="./doc/README-CN.md">简体中文</a>
