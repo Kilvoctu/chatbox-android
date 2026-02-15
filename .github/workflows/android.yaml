@@ -98,6 +98,12 @@ jobs:
           echo "--- Checking Installed Plugins ---"
           # This tells us if the app even has the Filesystem or Share plugins installed
           cat package.json | grep "@capacitor"
+      
+      - name: Inspect Export Logic
+        run: |
+          echo "--- Content of handleExportAndSave ---"
+          # Get the function and the 50 lines following it
+          grep -A 50 "const handleExportAndSave" src/renderer/components/layout/Toolbar.tsx
             
       - name: Sync & Build APK
         run: |
@@ -105,19 +111,31 @@ jobs:
           npx cap sync android
           npx cap update android
 
-          # 1. Force Bridge Activity & Plugin Initialization
+          # 1. Force Bridge Activity with Download Listener
           ACTIVITY_PATH="android/app/src/main/java/com/custom/chatbox/build/MainActivity.java"
           
-          # Overwrite the file with a version that forces the bridge to load
           cat <<EOF > $ACTIVITY_PATH
           package com.custom.chatbox.build;
           import android.os.Bundle;
+          import android.webkit.DownloadListener;
+          import android.webkit.WebView;
+          import android.widget.Toast;
           import com.getcapacitor.BridgeActivity;
 
           public class MainActivity extends BridgeActivity {
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
+                  
+                  // This catches "Web Downloads" that Capacitor usually ignores
+                  this.getBridge().getWebView().setDownloadListener(new DownloadListener() {
+                      @Override
+                      public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+                          // If the app tries to download a blob or file, we show a message
+                          // This confirms the button is at least "sending" the file
+                          Toast.makeText(MainActivity.this, "Download started...", Toast.LENGTH_SHORT).show();
+                      }
+                  });
               }
           }
           EOF
