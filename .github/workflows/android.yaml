@@ -104,6 +104,11 @@ jobs:
           echo "--- Content of handleExportAndSave ---"
           # Get the function and the 50 lines following it
           grep -A 50 "const handleExportAndSave" src/renderer/components/layout/Toolbar.tsx
+      
+      - name: Locate Settings Export Logic
+        run: |
+          # Search for the string used in the General Settings menu
+          grep -rE "Export Selected Data|Export All Data" src/renderer | grep ".tsx"
             
       - name: Sync & Build APK
         run: |
