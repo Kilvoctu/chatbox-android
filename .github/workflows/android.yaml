@@ -86,19 +86,19 @@ jobs:
           npx cap sync android
           npx cap update android
 
-          # 1. Force Bridge Activity with Native File Saver
+          # 1. Force Bridge Activity with Smart Decoder
           ACTIVITY_PATH="android/app/src/main/java/com/custom/chatbox/build/MainActivity.java"
           
           cat <<EOF > $ACTIVITY_PATH
           package com.custom.chatbox.build;
           import android.os.Bundle;
           import android.os.Environment;
+          import android.util.Base64;
           import android.webkit.URLUtil;
           import android.widget.Toast;
           import com.getcapacitor.BridgeActivity;
           import java.io.File;
           import java.io.FileOutputStream;
-          import java.io.OutputStreamWriter;
           import java.net.URLDecoder;
           import java.nio.charset.StandardCharsets;
 
@@ -109,37 +109,36 @@ jobs:
                   
                   this.getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
                       try {
-                          // 1. Prepare the Export Directory
                           File exportDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "chatbox_ai_exports");
                           if (!exportDir.exists()) exportDir.mkdirs();
 
-                          // 2. Generate Filename
                           String fileName = "chatbox_export_" + System.currentTimeMillis() + ".json";
-                          if (contentDisposition != null && contentDisposition.contains("filename=")) {
-                              fileName = contentDisposition.split("filename=")[1].replace("\"", "").split(";")[0];
-                          }
-
                           File file = new File(exportDir, fileName);
 
-                          // 3. Handle Data URLs (This is what 'platform.exporter' sends)
                           if (url.startsWith("data:")) {
-                              String data = url.substring(url.indexOf(",") + 1);
-                              // Decode URL-encoded text or Base64
-                              String decodedData = URLDecoder.decode(data, StandardCharsets.UTF_8.name());
+                              String dataHeader = url.substring(0, url.indexOf(","));
+                              String dataBody = url.substring(url.indexOf(",") + 1);
+                              byte[] decodedBytes;
+
+                              if (dataHeader.contains("base64")) {
+                                  // Handle Base64 encoded data
+                                  decodedBytes = Base64.decode(dataBody, Base64.DEFAULT);
+                              } else {
+                                  // Handle URL encoded plain text
+                                  String decodedText = URLDecoder.decode(dataBody, StandardCharsets.UTF_8.name());
+                                  decodedBytes = decodedText.getBytes(StandardCharsets.UTF_8);
+                              }
                               
                               FileOutputStream fos = new FileOutputStream(file);
-                              OutputStreamWriter osw = new OutputStreamWriter(fos);
-                              osw.write(decodedData);
-                              osw.close();
+                              fos.write(decodedBytes);
                               fos.close();
                               
-                              Toast.makeText(MainActivity.this, "Saved to Documents/chatbox_ai_exports", Toast.LENGTH_LONG).show();
+                              Toast.makeText(MainActivity.this, "Success! Saved to: Documents/chatbox_ai_exports", Toast.LENGTH_LONG).show();
                           } else {
-                              Toast.makeText(MainActivity.this, "Export triggered, but data format was unknown.", Toast.LENGTH_SHORT).show();
+                              Toast.makeText(MainActivity.this, "URL format: " + url.substring(0, Math.min(url.length(), 20)), Toast.LENGTH_SHORT).show();
                           }
                       } catch (Exception e) {
                           Toast.makeText(MainActivity.this, "Save Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                          e.printStackTrace();
                       }
                   });
               }
