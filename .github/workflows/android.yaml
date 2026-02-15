@@ -88,6 +88,16 @@ jobs:
           grep -r "Filesystem" src | head -n 20 || echo "No Filesystem calls found"
           grep -r "Directory.Documents" src || echo "No Documents ref found"
           grep -r "chatbox_ai_exports" src || echo "No folder name found"
+      
+      - name: UI & Plugin Search
+        run: |
+          echo "--- Searching for the 'Export' UI Label ---"
+          # This looks for the word 'Export' in the UI components
+          grep -rE "Export|Backup|Share" src | head -n 30
+          
+          echo "--- Checking Installed Plugins ---"
+          # This tells us if the app even has the Filesystem or Share plugins installed
+          cat package.json | grep "@capacitor"
             
       - name: Sync & Build APK
         run: |
@@ -95,9 +105,22 @@ jobs:
           npx cap sync android
           npx cap update android
 
-          # 1. Patch MainActivity (Bridge Fix)
+          # 1. Force Bridge Activity & Plugin Initialization
           ACTIVITY_PATH="android/app/src/main/java/com/custom/chatbox/build/MainActivity.java"
-          sed -i '/package com.custom.chatbox.build;/a import android.os.Bundle;' $ACTIVITY_PATH
+          
+          # Overwrite the file with a version that forces the bridge to load
+          cat <<EOF > $ACTIVITY_PATH
+          package com.custom.chatbox.build;
+          import android.os.Bundle;
+          import com.getcapacitor.BridgeActivity;
+
+          public class MainActivity extends BridgeActivity {
+              @Override
+              public void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+              }
+          }
+          EOF
 
           # 2. Overwrite Manifest (The Safe Fix)
           # We write the entire file from scratch to ensure perfect XML structure.
