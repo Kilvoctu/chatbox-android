@@ -82,6 +82,10 @@ jobs:
       
       - name: Find Export Path Logic
         run: |
+          echo "--- Searching for folder name ---"
+          grep -r "chatbox_ai_exports" . || echo "Folder string not found"
+          echo "--- Searching for Filesystem calls ---"
+          grep -r "Filesystem" src | head -n 20 || echo "No Filesystem calls found"
           grep -r "Directory.Documents" src || echo "No Documents ref found"
           grep -r "chatbox_ai_exports" src || echo "No folder name found"
             
