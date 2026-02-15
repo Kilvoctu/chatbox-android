@@ -74,71 +74,72 @@ jobs:
 
       - name: Decode Keystore
         run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.jks
-      
+
       - name: Generate App Icons
         run: |
           pnpm install @capacitor/assets -g
           npx capacitor-assets generate --android
-      
-      - name: Find Export Path Logic
-        run: |
-          echo "--- Searching for folder name ---"
-          grep -r "chatbox_ai_exports" . || echo "Folder string not found"
-          echo "--- Searching for Filesystem calls ---"
-          grep -r "Filesystem" src | head -n 20 || echo "No Filesystem calls found"
-          grep -r "Directory.Documents" src || echo "No Documents ref found"
-          grep -r "chatbox_ai_exports" src || echo "No folder name found"
-      
-      - name: UI & Plugin Search
-        run: |
-          echo "--- Searching for the 'Export' UI Label ---"
-          # This looks for the word 'Export' in the UI components
-          grep -rE "Export|Backup|Share" src | head -n 30
-          
-          echo "--- Checking Installed Plugins ---"
-          # This tells us if the app even has the Filesystem or Share plugins installed
-          cat package.json | grep "@capacitor"
-      
-      - name: Inspect Export Logic
-        run: |
-          echo "--- Content of handleExportAndSave ---"
-          # Get the function and the 50 lines following it
-          grep -A 50 "const handleExportAndSave" src/renderer/components/layout/Toolbar.tsx
-      
-      - name: Locate Settings Export Logic
-        run: |
-          # Search for the string used in the General Settings menu
-          grep -rE "Export Selected Data|Export All Data" src/renderer | grep ".tsx"
-            
+
       - name: Sync & Build APK
         run: |
           mkdir -p release/app/dist/renderer
           npx cap sync android
           npx cap update android
 
-          # 1. Force Bridge Activity with Download Listener
+          # 1. Force Bridge Activity with Native File Saver
           ACTIVITY_PATH="android/app/src/main/java/com/custom/chatbox/build/MainActivity.java"
           
           cat <<EOF > $ACTIVITY_PATH
           package com.custom.chatbox.build;
           import android.os.Bundle;
-          import android.webkit.DownloadListener;
-          import android.webkit.WebView;
+          import android.os.Environment;
+          import android.webkit.URLUtil;
           import android.widget.Toast;
           import com.getcapacitor.BridgeActivity;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.OutputStreamWriter;
+          import java.net.URLDecoder;
+          import java.nio.charset.StandardCharsets;
 
           public class MainActivity extends BridgeActivity {
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   
-                  // This catches "Web Downloads" that Capacitor usually ignores
-                  this.getBridge().getWebView().setDownloadListener(new DownloadListener() {
-                      @Override
-                      public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
-                          // If the app tries to download a blob or file, we show a message
-                          // This confirms the button is at least "sending" the file
-                          Toast.makeText(MainActivity.this, "Download started...", Toast.LENGTH_SHORT).show();
+                  this.getBridge().getWebView().setDownloadListener((url, userAgent, contentDisposition, mimetype, contentLength) -> {
+                      try {
+                          // 1. Prepare the Export Directory
+                          File exportDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "chatbox_ai_exports");
+                          if (!exportDir.exists()) exportDir.mkdirs();
+
+                          // 2. Generate Filename
+                          String fileName = "chatbox_export_" + System.currentTimeMillis() + ".json";
+                          if (contentDisposition != null && contentDisposition.contains("filename=")) {
+                              fileName = contentDisposition.split("filename=")[1].replace("\"", "").split(";")[0];
+                          }
+
+                          File file = new File(exportDir, fileName);
+
+                          // 3. Handle Data URLs (This is what 'platform.exporter' sends)
+                          if (url.startsWith("data:")) {
+                              String data = url.substring(url.indexOf(",") + 1);
+                              // Decode URL-encoded text or Base64
+                              String decodedData = URLDecoder.decode(data, StandardCharsets.UTF_8.name());
+                              
+                              FileOutputStream fos = new FileOutputStream(file);
+                              OutputStreamWriter osw = new OutputStreamWriter(fos);
+                              osw.write(decodedData);
+                              osw.close();
+                              fos.close();
+                              
+                              Toast.makeText(MainActivity.this, "Saved to Documents/chatbox_ai_exports", Toast.LENGTH_LONG).show();
+                          } else {
+                              Toast.makeText(MainActivity.this, "Export triggered, but data format was unknown.", Toast.LENGTH_SHORT).show();
+                          }
+                      } catch (Exception e) {
+                          Toast.makeText(MainActivity.this, "Save Failed: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                          e.printStackTrace();
                       }
                   });
               }
